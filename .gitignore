@@ -1,0 +1,5 @@
+flux_venv/*
+generated_depth_images/*
+generated_images/*
+output/*
+__pycache__/*
