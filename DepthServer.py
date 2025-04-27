@@ -7,14 +7,12 @@ from flask import Flask, request, Response, abort, jsonify
 from DepthGenerator import DepthGenerator  
 
 # --------------------------------------------------------------------------
-gen = DepthGenerator()                        # single global instance
+gen = DepthGenerator(model_id="xingyang1/Distill-Any-Depth-Small-hf", compile_level="mid")
 # --------------------------------------------------------------------------
 
 app = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR); app.logger.disabled = True
 
-seg, first_ts = 0, None
-acc = dict.fromkeys(["parse","read","decode","pre","infer","up","proc"], 0.0)
 
 @app.route("/depth_raw", methods=["POST"])
 def depth_raw():
@@ -28,11 +26,6 @@ def depth_raw():
         • buf → NumPy view (no copy)
         • view.copy()  (required because we mutate it on GPU)
     """
-    global seg, first_ts, acc
-
-    t0 = time.perf_counter()
-    if seg == 0:
-        first_ts = t0
 
     try:
         w = int(request.args["width"])
@@ -46,17 +39,9 @@ def depth_raw():
 
     rgba = np.frombuffer(buf, np.uint8).reshape(h, w, 4).copy()
 
-    out_bytes, model_t = gen.process(rgba, w, h)      # FP32 little-endian
+    out_bytes = gen.process(rgba, w, h)      # FP32 little-endian
 
     resp = Response(out_bytes, mimetype="application/octet-stream")
-
-    acc["proc"] += (time.perf_counter() - t0) * 1e3
-    seg += 1
-    if seg >= 60:
-        dt = t0 - first_ts
-        print(f"[@60] proc={acc['proc']/seg:.2f} ms   fps_roundtrip={seg/dt:.1f}")
-        seg, first_ts = 0, None
-        acc = dict.fromkeys(acc, 0.0)
 
     return resp
 

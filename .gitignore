@@ -3,3 +3,5 @@ generated_depth_images/*
 generated_images/*
 output/*
 __pycache__/*
+yolov8l-face.pt
+bytes

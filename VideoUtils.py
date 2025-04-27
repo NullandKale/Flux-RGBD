@@ -56,121 +56,6 @@ class VideoFrameGenerator:
     def ensure_even(self, value):
         return value if value % 2 == 0 else value + 1
 
-class FFMPEGVideoWriter:
-    def __init__(self,
-                 output_file: str,
-                 fps: float,
-                 width: int,
-                 height: int,
-                 audio_file: str | None = None,
-                 debug: bool = False,
-                 use_nvenc: bool = False):
-        """
-        Writes raw RGB24 frames (via stdin) to a video file using ffmpeg.
-        Optionally merges audio from 'audio_file'.
-
-        :param output_file: Path to the output video
-        :param fps: Frames per second
-        :param width: Frame width
-        :param height: Frame height
-        :param audio_file: Path to audio/video file for audio track
-        :param debug: If True, print ffmpeg stderr
-        :param use_nvenc: If True, use NVIDIA NVENC HEVC; else libx264 H264
-        """
-        self.width = width
-        self.height = height
-        self.debug = debug
-
-        # Build ffmpeg command
-        cmd = [
-            'ffmpeg', '-y',
-            '-f', 'rawvideo',
-            '-pix_fmt', 'rgb24',
-            '-s', f'{width}x{height}',
-            '-r', str(fps),
-            '-i', '-'
-        ]
-
-        if audio_file is not None:
-            cmd += ['-i', audio_file]
-
-        # Always map video from stdin
-        cmd += ['-map', '0:v:0']
-
-        # Map audio if requested, but allow missing audio without error
-        if audio_file is not None:
-            cmd += ['-map', '1:a:0?']
-
-        # Choose encoder
-        if use_nvenc:
-            cmd += ['-c:v', 'hevc_nvenc', '-preset', 'medium', '-cq:v', '23']
-        else:
-            cmd += ['-c:v', 'libx264',   '-preset', 'medium', '-crf', '23',]
-
-        # Audio encoding and sync
-        if audio_file is not None:
-            cmd += ['-c:a', 'aac', '-ac', '2', '-shortest']
-
-        cmd.append(output_file)
-
-        # Launch ffmpeg subprocess
-        self.process = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=2**24
-        )
-
-        # Drain stderr in a daemon thread
-        self.stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
-        self.stderr_thread.start()
-
-    def _read_stderr(self):
-        for raw in self.process.stderr:
-            if self.debug:
-                print("ffmpeg stderr:", raw.decode('utf-8', errors='ignore').rstrip())
-
-    def write_frame(self, frame: np.ndarray):
-        """
-        Write one RGB24 frame to ffmpeg's stdin.
-        """
-        expected_shape = (self.height, self.width, 3)
-        assert frame.shape == expected_shape, \
-            f"Frame shape mismatch: expected {expected_shape}, got {frame.shape}"
-        assert frame.dtype == np.uint8, \
-            f"Frame dtype mismatch: expected np.uint8, got {frame.dtype}"
-
-        # If ffmpeg exited early, raise
-        if self.process.poll() is not None:
-            raise RuntimeError(f"FFmpeg exited early (code {self.process.returncode})")
-
-        try:
-            self.process.stdin.write(frame.tobytes())
-        except BrokenPipeError as e:
-            raise RuntimeError(
-                "FFmpeg pipe broken; enable debug=True to see ffmpeg's stderr."
-            ) from e
-
-    def release(self):
-        """
-        Close stdin, join stderr thread, and wait for ffmpeg to exit.
-        """
-        if getattr(self.process, 'stdin', None) and not self.process.stdin.closed:
-            try:
-                self.process.stdin.close()
-            except Exception:
-                pass
-
-        # Let stderr thread finish
-        self.stderr_thread.join(timeout=1)
-
-        if self.process.poll() is None:
-            self.process.wait()
-
-    def __del__(self):
-        try:
-            self.release()
-        except Exception:
-            pass
-
-
 def get_video_frame_count(video_path):
     """
     Get accurate frame count using ffprobe
@@ -225,3 +110,138 @@ def get_video_frame_count(video_path):
         print(f"Error getting frame count: {str(e)}")
         
     return None
+
+class FFMPEGVideoWriter:
+    def __init__(self,
+                 output_file: str,
+                 fps: float,
+                 width: int,
+                 height: int,
+                 audio_file: str | None = None,
+                 debug: bool = False,
+                 use_nvenc: bool = False):
+        """
+        Writes raw RGB24 frames (via stdin) to a video file using ffmpeg.
+        Optionally merges audio from *audio_file*.
+
+        Parameters
+        ----------
+        output_file : str   Path to the output video
+        fps         : float Frames per second
+        width       : int   Frame width  (must be even for many codecs)
+        height      : int   Frame height (must be even for many codecs)
+        audio_file  : str | None  Source file for audio track (optional)
+        debug       : bool  If True, print ffmpeg stderr live
+        use_nvenc   : bool  If True, encode with **hevc_nvenc**;
+                            otherwise **libx264** (H.264)
+        """
+        self.width = width
+        self.height = height
+        self.debug = debug
+
+        # ---------- build ffmpeg command -----------------------------
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-s", f"{width}x{height}",
+            "-r", str(fps),
+            "-i", "-",                    # stdin = raw frames
+        ]
+
+        if audio_file is not None:
+            cmd += ["-i", audio_file]
+
+        # Always map video from stdin
+        cmd += ["-map", "0:v:0"]
+
+        # Map audio if present; ? makes it optional if no audio stream
+        if audio_file is not None:
+            cmd += ["-map", "1:a:0?"]
+
+        # ---------- choose video encoder -----------------------------
+        if use_nvenc:
+            # HEVC (H.265).  Add yuv420p to guarantee compatibility.
+            cmd += [
+                "-c:v", "hevc_nvenc",
+                "-preset", "medium",
+                "-cq", "23",
+                "-pix_fmt", "yuv420p",
+                "-profile:v", "main",
+            ]
+        else:
+            # Software H.264 for maximum compatibility.
+            cmd += [
+                "-c:v", "libx264",
+                "-preset", "medium",
+                "-crf", "23",
+                "-pix_fmt", "yuv420p",
+            ]
+
+        # ---------- audio & container flags --------------------------
+        if audio_file is not None:
+            cmd += ["-c:a", "aac", "-ac", "2"]
+        # Write moov atom first → thumbnails work immediately
+        cmd += ["-movflags", "+faststart"]
+
+        cmd.append(output_file)
+
+        # ---------- launch subprocess -------------------------------
+        self.process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=2 ** 24,
+        )
+
+        # Drain stderr so buffer can’t fill
+        self.stderr_thread = threading.Thread(
+            target=self._read_stderr, daemon=True
+        )
+        self.stderr_thread.start()
+
+    # -----------------------------------------------------------------
+    def _read_stderr(self):
+        for raw in self.process.stderr:
+            if self.debug:
+                print("ffmpeg stderr:", raw.decode("utf-8", errors="ignore").rstrip())
+
+    # -----------------------------------------------------------------
+    def write_frame(self, frame: np.ndarray):
+        """Write one RGB24 frame (H×W×3, uint8) to ffmpeg stdin."""
+        exp = (self.height, self.width, 3)
+        if frame.shape != exp:
+            raise ValueError(f"frame shape {frame.shape} != expected {exp}")
+        if frame.dtype != np.uint8:
+            raise ValueError("frame dtype must be uint8")
+
+        if self.process.poll() is not None:
+            raise RuntimeError(f"ffmpeg exited early (code {self.process.returncode})")
+
+        try:
+            self.process.stdin.write(frame.tobytes())
+        except BrokenPipeError as e:
+            raise RuntimeError(
+                "Broken ffmpeg pipe — enable debug=True to inspect stderr."
+            ) from e
+
+    # -----------------------------------------------------------------
+    def release(self):
+        """Close stdin, join stderr thread, and wait for ffmpeg to exit."""
+        if getattr(self.process, "stdin", None) and not self.process.stdin.closed:
+            try:
+                self.process.stdin.close()
+            except Exception:
+                pass
+
+        self.stderr_thread.join(timeout=1)
+
+        if self.process.poll() is None:
+            self.process.wait()
+
+    # -----------------------------------------------------------------
+    def __del__(self):
+        try:
+            self.release()
+        except Exception:
+            pass
