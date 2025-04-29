@@ -4,10 +4,10 @@
 import os, time, logging, traceback, numpy as np
 from flask import Flask, request, Response, abort, jsonify
 
-from DepthGenerator import DepthGenerator  
+from DepthGenerator16 import DepthGenerator  
 
 # --------------------------------------------------------------------------
-gen = DepthGenerator(model_id="xingyang1/Distill-Any-Depth-Small-hf", compile_level="mid")
+gen = DepthGenerator(model_id="xingyang1/Distill-Any-Depth-Small-hf", compile_level="fast")
 # --------------------------------------------------------------------------
 
 app = Flask(__name__)

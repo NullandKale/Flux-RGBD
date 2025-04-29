@@ -159,14 +159,5 @@ class DepthGenerator:
 
         # calculate elapsed
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        if self.gui:
-            # log inference time as time series
-            self.gui.addTimeSeriesData(
-                "depth_inf_ms",
-                elapsed_ms,
-                min_val=0.0,
-                max_val=elapsed_ms * 2,
-                mode=1
-            )
 
         return host_out.cpu().numpy().tobytes()

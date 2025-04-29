@@ -3,6 +3,7 @@ import numpy as np
 import math
 from collections import deque
 import colorsys
+import sys
 
 # -----------------------------------------------------------------------------
 # GUI: tiles buffers, draws faces, shows unlimited time‑series (text + graph)
@@ -229,6 +230,11 @@ class GUI:
         self.renderers = [BufferRenderer(), TextSeriesRenderer(), GraphSeriesRenderer()]
 
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(
+            self.window_name,
+            cv2.WND_PROP_FULLSCREEN,
+            cv2.WINDOW_FULLSCREEN
+        )
         cv2.resizeWindow(self.window_name, *self.window_size)
 
     # public API
@@ -273,8 +279,12 @@ class GUI:
     # internal
     def _show_canvas(self, canvas: np.ndarray):
         cv2.imshow(self.window_name, canvas)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1)
+        if key & 0xFF == ord('q'):
             raise KeyboardInterrupt
+        # if the user closed the window, exit immediately
+        if cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) < 1:
+            sys.exit(0)
 
     def _color_for_series(self, key: str):
         keys = sorted(self.time_series.keys())
