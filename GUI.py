@@ -20,11 +20,30 @@ class BufferRenderer(Renderer):
     """Tiles image buffers and draws face boxes *after* scaling so alignment is correct."""
     def draw(self, canvas: np.ndarray, gui: "GUI"):
         w_win, h_win = gui.window_size
-        img_h = h_win * 3 // 4  # top 75 % for images
-        names = list(gui.buffers.keys())
+        img_h = h_win * 3 // 4  # top 75% for images
+        
+        # 1) Collect names
+        all_names = list(gui.buffers.keys())
+        unnumbered = []
+        numbered   = []
+        for name in all_names:
+            parts = name.split(":", 1)
+            if len(parts) == 2 and parts[0].isdigit():
+                numbered.append((int(parts[0]), name))
+            else:
+                unnumbered.append(name)
+        
+        # 2) Sort the numbered ones by their integer prefix
+        numbered.sort(key=lambda x: x[0])
+        numbered = [name for _, name in numbered]
+        
+        # 3) Final ordering: unnumbered first, then numbered
+        names = unnumbered + numbered
+
         if not names:
             return
 
+        # layout
         n = len(names)
         cols = n if n <= 2 else math.ceil(math.sqrt(n))
         rows = 1 if n <= 2 else math.ceil(n / cols)
@@ -36,10 +55,10 @@ class BufferRenderer(Renderer):
             scale = min(tile_w / iw, tile_h / ih)
             rt_w, rt_h = int(iw * scale), int(ih * scale)
 
-            # resize first
+            # resize
             thumb = cv2.resize(src, (rt_w, rt_h), interpolation=cv2.INTER_AREA)
 
-            # faces (scaled)
+            # draw faces
             for (x0, y0, x1, y1) in gui.face_overlays.get(name, []):
                 cv2.rectangle(
                     thumb,
@@ -51,7 +70,8 @@ class BufferRenderer(Renderer):
             # label
             tsz, _ = cv2.getTextSize(name, gui.font, gui.font_scale, gui.font_thickness)
             cv2.rectangle(thumb, (0, 0), (tsz[0] + 6, tsz[1] + 6), (0, 0, 0), cv2.FILLED)
-            cv2.putText(thumb, name, (3, tsz[1] + 3), gui.font, gui.font_scale, (255, 255, 255), gui.font_thickness)
+            cv2.putText(thumb, name, (3, tsz[1] + 3),
+                        gui.font, gui.font_scale, (255, 255, 255), gui.font_thickness)
 
             # blit
             r, c = divmod(idx, cols)

@@ -63,7 +63,7 @@ class DepthVideoProcessor:
 
         # Face detector if mode >= 2
         self.face_detector = (
-            FaceDetector(device='cuda', gui=self.gui)
+            FaceDetector(gui=self.gui)
             if args.mode >= 2 else None
         )
 
@@ -85,14 +85,17 @@ class DepthVideoProcessor:
         self.frames_processed = 0
 
     def run_frame(self, curr_rgb):
+        # wrap this frame
+        frame = Frame(curr_rgb)
+
         freq = cv2.getTickFrequency()
         t_frame_start = cv2.getTickCount()
 
-        # 1) Preview-only modes
+        # preview‐only modes
         if self.args.mode in (-2, -1):
             side = np.concatenate(
-                (curr_rgb,
-                 self.prev_rgb if self.args.mode == -2 else curr_rgb),
+                (frame.rgb,
+                 self.prev_rgb if self.args.mode == -2 else frame.rgb),
                 axis=1
             )
             t_write = cv2.getTickCount()
@@ -100,98 +103,82 @@ class DepthVideoProcessor:
             if self.gui:
                 ms_write = (cv2.getTickCount() - t_write) / freq * 1000.0
                 self.gui.addTimeSeriesData('ms/write', ms_write, mode=0)
-                # final GUI render
-                self.gui.addBuffer('color', curr_rgb)
-                self.gui.addBuffer('depth', side[:, :curr_rgb.shape[1]])
+                self.gui.addBuffer('color', frame.rgb)
+                self.gui.addBuffer('depth', side[:, :frame.rgb.shape[1]])
                 self.gui._render()
-            self.prev_rgb = curr_rgb
+            self.prev_rgb = frame.rgb
             return
 
-        # 2) Face detection
-        boxes = []
+        # face detection
         if self.do_faces:
             t_face = cv2.getTickCount()
-            h0, w0 = curr_rgb.shape[:2]
-            h1, w1 = self.round_up32(h0), self.round_up32(w0)
-            det_rgb = cv2.resize(curr_rgb, (w1, h1), interpolation=cv2.INTER_LINEAR)
-            boxes, _ = self.face_detector.detect(det_rgb)
-            sx, sy = w0 / w1, h0 / h1
-            boxes = [(int(x0*sx), int(y0*sy), int(x1*sx), int(y1*sy))
-                     for x0, y0, x1, y1 in boxes]
+            self.face_detector.detect(frame)
             if self.gui:
                 ms = (cv2.getTickCount() - t_face) / freq * 1000.0
                 self.gui.addTimeSeriesData('ms/face', ms, mode=0)
 
-        # 3) Depth estimation
+        # depth estimation
         t_depth = cv2.getTickCount()
-        h0, w0 = curr_rgb.shape[:2]
-        d_bytes = self.depth_model.process(curr_rgb, w0, h0)
+        h0, w0 = frame.rgb.shape[:2]
+        frame.depth(self.depth_model, w0, h0)
         if self.gui:
             ms = (cv2.getTickCount() - t_depth) / freq * 1000.0
             self.gui.addTimeSeriesData('ms/depth', ms, mode=0)
-        d_nat = np.frombuffer(d_bytes, np.float32).reshape(h0, w0)
 
-        # 4) Depth filter (now using Frame + FrameHistory)
+        # depth filtering
         if self.do_filter:
             t_filter = cv2.getTickCount()
-            # wrap into Frame, apply filter, store history
-            frame = Frame(curr_rgb)
-            frame.d_nat = d_nat
-            filtered = self.depth_filter.filter(frame.d_nat, curr_rgb)
-            frame.d_filtered = filtered
-            self.depth_history.append(frame)
-            d_nat = filtered
+            self.depth_filter.filter_frame(frame)
             if self.gui:
                 ms = (cv2.getTickCount() - t_filter) / freq * 1000.0
                 self.gui.addTimeSeriesData('ms/filter', ms, mode=0)
 
-        # 5) Autofocus
+        # autofocus
         if self.do_autofocus:
             t_auto = cv2.getTickCount()
-            d_nat = self.autofocus.remap(d_nat, boxes)
+            self.autofocus.remap(frame)
             if self.gui:
                 ms = (cv2.getTickCount() - t_auto) / freq * 1000.0
                 self.gui.addTimeSeriesData('ms/autofocus', ms, mode=0)
 
-        # 6) Text filter
+        # text filtering
         if self.do_text:
             t_text = cv2.getTickCount()
-            d_nat = self.text_filter.filter(d_nat, curr_rgb)
+            self.text_filter.filter_frame(frame)
             if self.gui:
                 ms = (cv2.getTickCount() - t_text) / freq * 1000.0
                 self.gui.addTimeSeriesData('ms/text', ms, mode=0)
 
-        # 7) Write output frame
-        d_vis = self.depth_to_gray(d_nat)
-        side  = np.concatenate((curr_rgb, d_vis), axis=1)
+        # write output
+        side = frame.compute_side_by_side()
         t_write = cv2.getTickCount()
         self.writer.write_frame(side)
         if self.gui:
             ms = (cv2.getTickCount() - t_write) / freq * 1000.0
             self.gui.addTimeSeriesData('ms/write', ms, mode=0)
 
-        # 8) Frame-level metrics & GUI
+        # GUI metrics
         if self.gui:
             t_end = cv2.getTickCount()
             ms_frame = (t_end - t_frame_start) / freq * 1000.0
-            fps = 1000.0 / ms_frame if ms_frame > 0 else 0.0
+            fps      = 1000.0 / ms_frame if ms_frame > 0 else 0.0
             self.gui.addTimeSeriesData('ms/frame', ms_frame, mode=0)
             self.gui.addTimeSeriesData('fps', fps, mode=0)
 
             self.frames_processed += 1
-            elapsed = (t_end - self.start_tick) / freq
+            elapsed   = (t_end - self.start_tick) / freq
             remaining = self.frames_total - self.frames_processed
-            eta = elapsed / max(self.frames_processed, 1) * remaining
+            eta       = elapsed / max(self.frames_processed, 1) * remaining
             self.gui.addTimeSeriesData('eta_s', eta, mode=0)
 
-            self.gui.addBuffer('color', curr_rgb)
-            self.gui.addBuffer('depth', d_vis)
+            self.gui.addBuffer('color', frame.rgb)
+            self.gui.addBuffer('depth', frame.compute_depth_vis())
             if self.do_faces:
-                self.gui.setFaces('color', boxes)
+                self.gui.setFaces('color', frame.boxes)
             self.gui._render()
 
-        # update for next frame
-        self.prev_rgb = curr_rgb
+        # prepare next
+        self.prev_rgb = frame.rgb
 
     def process_video(self, path_in):
         self.do_filter    = self.args.mode >= 1
@@ -206,7 +193,8 @@ class DepthVideoProcessor:
         )
         it = iter(self.frames)
         try:
-            _, self.prev_rgb = next(it)
+            _, first_rgb = next(it)
+            self.prev_rgb = first_rgb
         except StopIteration:
             return
 
@@ -219,13 +207,11 @@ class DepthVideoProcessor:
 
         # instantiate depth filter + its history
         if self.do_filter:
-            self.depth_filter = DepthFilter(
+            self.depth_filter  = DepthFilter(
                 device='cuda',
                 fps=self.frames.fps,
                 gui=self.gui
             )
-            # history window matches filter.window
-            self.depth_history = FrameHistory(maxlen=self.depth_filter.window)
 
         # autofocus
         if self.do_autofocus:
