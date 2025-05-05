@@ -13,7 +13,6 @@ gen = DepthGenerator(model_id="xingyang1/Distill-Any-Depth-Small-hf", compile_le
 app = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR); app.logger.disabled = True
 
-
 @app.route("/depth_raw", methods=["POST"])
 def depth_raw():
     """

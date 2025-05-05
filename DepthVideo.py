@@ -279,7 +279,7 @@ if __name__ == '__main__':
     p.add_argument(
         '--mode', type=int,
         choices=[-2, -1, 0, 1, 2, 3, 4],
-        default=4,
+        default=3,
         help=(
             '-2=delay-right, -1=same-frame, 0=depth, '
             '1=+filter, 2=+faces, 3=+autofocus, 4=+text-filter'

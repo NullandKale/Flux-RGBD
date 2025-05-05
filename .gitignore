@@ -5,3 +5,5 @@ output/*
 __pycache__/*
 yolov8l-face.pt
 bytes
+yolov11n-face.pt
+*.pt
